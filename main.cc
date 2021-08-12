@@ -13,7 +13,7 @@
 #include <iostream>
 #include <string>
 #include <thread>
-#include <stack>
+#include <deque>
 /* C libs */
 #include <cstdio>
 /* Qt */
@@ -39,13 +39,21 @@
 #else
 #error "Not supported target"
 #endif
-
 #define CURRENT_TIME std::time(nullptr)
 #define HIFI_ASSET "hifi"
-
+#define TIME_CHARACTERS 12
+#define MAX_PLAYER_CHARS (32 - TIME_CHARACTERS)
+#define MAX_PLAYER_CHARS_MINUS_ONE (MAX_PLAYER_CHARS - 1)
+#define AUTOSCROLL_CAP 24
 static long long APPLICATION_ID = 584458858731405315;
+int64_t currentTime = 0;
+
+
 std::atomic<bool> isPresenceActive;
+
 static char *countryCode = nullptr;
+
+
 
 static std::string currentStatus;
 static std::mutex currentSongMutex;
@@ -116,40 +124,124 @@ struct Application {
 struct Application app;
 
 
-static void updateDiscordPresence(const Song &song) {
+static void updateDiscordPresence(const Song &song, std::deque<char> & songDetails, std::deque<char> & songScroll) {
     struct IDiscordActivityManager *manager = app.core->get_activity_manager(app.core);
 
+    if (!song.isPaused) {
+        currentTime++;
+    }
     if (isPresenceActive && song.loaded) {
-        struct DiscordActivityTimestamps timestamps{};
-        memset(&timestamps, 0, sizeof(timestamps));
-        if (song.runtime) {
-            timestamps.end = song.starttime + song.runtime + song.pausedtime;
-        }
-        timestamps.start = song.starttime;
 
-        struct DiscordActivity activity{DiscordActivityType_Listening};
+        struct DiscordActivity activity{DiscordActivityType_Streaming};
         memset(&activity, 0, sizeof(activity));
-        activity.type = DiscordActivityType_Listening;
+        activity.type = DiscordActivityType_Streaming;
         activity.application_id = APPLICATION_ID;
-        snprintf(activity.details, 128, "%s", song.title.c_str());
-        snprintf(activity.state, 128, "%s", (song.artist + " - " + song.album).c_str());
+
+//        for (char i: songDetails) {
+//            std::cout << ((int)i) << " ";
+//        }
+
+        if (songScroll.size() <= AUTOSCROLL_CAP) {
+            songScroll = songDetails;
+        } else {
+            songScroll.pop_front();
+        }
+        char buffer[128];
+        int counter = 0;
+        for (char i: songScroll) {
+            buffer[counter] = i;
+            counter++;
+        }
+
+        snprintf(activity.details, 128, "%s", buffer);
+
+
+
+
+
+        double currentSegment = static_cast<double>(currentTime) / static_cast<double>(song.runtime);
+
+        int segmentForCircle = (int)(MAX_PLAYER_CHARS_MINUS_ONE * currentSegment);
+
+        char player[MAX_PLAYER_CHARS + 12];
+
+        long long seconds = currentTime % 60;
+        long long minutes = currentTime / 60;
+        char minutesAsString[3];
+        char secondsAsString[3];
+
+        if (minutes < 10) {
+            player[0] = '0';
+            snprintf(minutesAsString,2,"%d",minutes);
+            player[1] = minutesAsString[0];
+        } else {
+            snprintf(minutesAsString,2,"%d",minutes);
+            player[0] = minutesAsString[0];
+            player[1] = minutesAsString[1];
+        }
+        player[2] = ':';
+        if (seconds < 10) {
+            player[3] = '0';
+            snprintf(secondsAsString,3,"%d",seconds);
+            player[4] = secondsAsString[0];
+        } else {
+            snprintf(secondsAsString,3,"%d",seconds);
+            player[3] = secondsAsString[0];
+            player[4] = secondsAsString[1];
+        }
+        player[5] = ' ';
+
+        for (int i=0; i < MAX_PLAYER_CHARS; i++) {
+
+            if (i == segmentForCircle) {
+                player[(TIME_CHARACTERS/2) + i] = 'o';
+            } else {
+                player[(TIME_CHARACTERS/2) + i] = '-';
+            }
+
+        }
+        player[(MAX_PLAYER_CHARS_MINUS_ONE + TIME_CHARACTERS) - 6] = ' ';
+
+        seconds = song.runtime % 60;
+        minutes = song.runtime / 60;
+        if (minutes < 10) {
+            player[(MAX_PLAYER_CHARS_MINUS_ONE + TIME_CHARACTERS) - 5] = '0';
+            snprintf(minutesAsString,2,"%d",minutes);
+            player[(MAX_PLAYER_CHARS_MINUS_ONE + TIME_CHARACTERS) - 4] = minutesAsString[0];
+        } else {
+            snprintf(minutesAsString,2,"%d",minutes);
+            player[(MAX_PLAYER_CHARS_MINUS_ONE + TIME_CHARACTERS) - 5] = minutesAsString[0];
+            player[(MAX_PLAYER_CHARS_MINUS_ONE + TIME_CHARACTERS) - 4] = minutesAsString[1];
+
+        }
+        player[(MAX_PLAYER_CHARS_MINUS_ONE + TIME_CHARACTERS) - 3] = ':';
+        if (seconds < 10) {
+            player[(MAX_PLAYER_CHARS_MINUS_ONE + TIME_CHARACTERS) - 2] = '0';
+            snprintf(secondsAsString,3,"%d",seconds);
+            player[(MAX_PLAYER_CHARS_MINUS_ONE + TIME_CHARACTERS) - 1] = secondsAsString[0];
+        } else {
+            snprintf(secondsAsString,3,"%d",seconds);
+            player[(MAX_PLAYER_CHARS_MINUS_ONE + TIME_CHARACTERS) - 2] = secondsAsString[0];
+            player[(MAX_PLAYER_CHARS_MINUS_ONE + TIME_CHARACTERS) - 1] = secondsAsString[1];
+        }
+
+
+        player[MAX_PLAYER_CHARS_MINUS_ONE + TIME_CHARACTERS] = '\0';
+
+
+        snprintf(activity.state, 128, "%s", player);
+
 
         struct DiscordActivityAssets assets{};
         memset(&assets, 0, sizeof(assets));
         if (song.isPaused) {
             snprintf(assets.small_image, 128, "%s", "pause");
             snprintf(assets.small_text, 128, "%s", "Paused");
-        } else {
-            activity.timestamps = timestamps;
         }
+
         snprintf(assets.large_image, 128, "%s", song.isHighRes() ? "test" : HIFI_ASSET);
         snprintf(assets.large_text, 128, "%s", song.isHighRes() ? "Playing High-Res Audio" : "");
-        if (song.id[0] != '\0') {
-            struct DiscordActivitySecrets secrets{};
-            memset(&secrets, 0, sizeof(secrets));
-            snprintf(secrets.join, 128, "%s", song.id);
-            activity.secrets = secrets;
-        }
+
         activity.assets = assets;
 
         activity.instance = false;
@@ -181,7 +273,7 @@ static void discordInit() {
 }
 
 
-[[noreturn]] inline void rpcLoop() {
+[[noreturn]] inline void rpcLoop(std::deque<char> & songDetails, std::deque<char> & songScroll) {
     using json = nlohmann::json;
     using string = std::string;
     httplib::Client cli("api.tidal.com", 80, 3);
@@ -258,37 +350,51 @@ static void discordInit() {
 #ifdef DEBUG
                     std::cout << curSong.title << "\tFrom: " << curSong.artist << std::endl;
 #endif
+                    std::string details = (curSong.title + " - " + curSong.artist + " - " + curSong.album);
+                    unsigned long long length = details.length();
 
+                    char buffer[length + 1];
+                    std::strcpy(buffer,details.c_str());
+                    songDetails.clear();
+                    for (int i=0; i<length+1; i++) {
+                        songDetails.push_back(buffer[i]);
+                    }
+
+                    songScroll = songDetails;
                     // get time just before passing it to RPC handlers
+                    currentTime = 0;
                     curSong.starttime = CURRENT_TIME + 2;  // add 2 seconds to be more accurate, not a chance
-                    updateDiscordPresence(curSong);
+
+                    updateDiscordPresence(curSong,songDetails,songScroll);
                 } else {
                     if (curSong.isPaused) {
                         curSong.isPaused = false;
-                        updateDiscordPresence(curSong);
+                        updateDiscordPresence(curSong,songDetails,songScroll);
 
                         std::lock_guard<std::mutex> lock(currentSongMutex);
                         currentStatus = "Paused " + curSong.title;
+                    } else {
+                        updateDiscordPresence(curSong,songDetails,songScroll);
                     }
                 }
 
             } else if (localStatus == opened) {
                 curSong.pausedtime += 1;
                 curSong.isPaused = true;
-                updateDiscordPresence(curSong);
+                updateDiscordPresence(curSong,songDetails,songScroll);
 
                 std::lock_guard<std::mutex> lock(currentSongMutex);
                 currentStatus = "Paused " + curSong.title;
             } else {
                 curSong = Song();
-                updateDiscordPresence(curSong);
+                updateDiscordPresence(curSong,songDetails,songScroll);
 
                 std::lock_guard<std::mutex> lock(currentSongMutex);
                 currentStatus = "Waiting for Tidal";
             }
         } else {
             curSong = Song();
-            updateDiscordPresence(curSong);
+            updateDiscordPresence(curSong,songDetails,songScroll);
 
             std::lock_guard<std::mutex> lock(currentSongMutex);
             currentStatus = "Disabled";
@@ -328,10 +434,11 @@ int main(int argc, char **argv) {
                                                                            : "Disabled (click to re-enable)");
                      }
     );
-
+    std::deque<char> songDetails;
+    std::deque<char> songScroll;
     QAction quitAction("Exit", nullptr);
-    QObject::connect(&quitAction, &QAction::triggered, [&app]() {
-      updateDiscordPresence(Song());
+    QObject::connect(&quitAction, &QAction::triggered, [&app, &songScroll, &songDetails]() {
+        updateDiscordPresence(Song(),songDetails,songScroll);
       app.quit();
     });
 
@@ -369,8 +476,10 @@ int main(int argc, char **argv) {
     });
 
     discordInit();
+
+
     // RPC loop call
-    std::thread t1(rpcLoop);
+    std::thread t1(rpcLoop,std::ref(songDetails),std::ref(songScroll));
     t1.detach();
 
     return app.exec();
